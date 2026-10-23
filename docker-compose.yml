@@ -1,0 +1,26 @@
+version: '3.8'
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: indexing_lab_db
+    environment:
+      POSTGRES_USER: labuser
+      POSTGRES_PASSWORD: labpassword
+      POSTGRES_DB: orders_lab
+    ports:
+      - "5432:5432"
+    command: >
+      postgres -c shared_preload_libraries=pg_stat_statements
+               -c pg_stat_statements.track=all
+               -c work_mem=64MB
+    volumes:
+      - ./src/database/seed.sql:/docker-entrypoint-initdb.d/seed.sql
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: indexing_lab_jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686" # Jaeger Web UI (Open in browser!)
+      - "4318:4318"   # OTLP HTTP receiver for OpenTelemetry
