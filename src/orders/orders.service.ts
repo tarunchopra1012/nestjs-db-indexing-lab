@@ -1,7 +1,16 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Between, DataSource } from 'typeorm';
+import type { SelectQueryBuilder } from 'typeorm';
 import { Order } from '../database/index.js';
+import type {
+  ListOrdersCursorQueryDto,
+  ListOrdersOffsetQueryDto,
+} from './dto/list-orders.query.dto.js';
+import { CursorPageDto, OrderListItemDto } from './dto/order-list-item.dto.js';
+import { decodeOrderCursor, encodeOrderCursor } from './order-cursor.js';
+
+const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1000;
 
 @Injectable()
 export class OrdersService {
@@ -17,126 +26,124 @@ export class OrdersService {
    * - SELECT COUNT(*) (scans all matching rows a second time!)
    * - OFFSET pagination (scans and discards N rows)
    */
-  async getOrdersSlow(merchantId: number, status: any, page = 200, limit = 20) {
+  async getOrdersSlow(dto: ListOrdersOffsetQueryDto) {
     const startTime = performance.now();
-    const startDate = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000); // 90 days ago
+    const startDate = new Date(Date.now() - NINETY_DAYS_MS);
     const endDate = new Date();
-    const offset = (page - 1) * limit;
+    const offset = (dto.page - 1) * dto.limit;
 
     // Standard naive TypeORM call
     const [orders, totalCount] = await this.orderRepo.findAndCount({
       where: {
-        merchant_id: String(merchantId),
-        status,
+        merchant_id: dto.merchantId,
+        status: dto.status,
         created_at: Between(startDate, endDate),
       },
       order: { created_at: 'DESC' },
       skip: offset,
-      take: limit,
+      take: dto.limit,
     });
 
     const executionTimeMs = +(performance.now() - startTime).toFixed(2);
 
-    // Grab the exact Postgres execution plan to see Seq Scan / Heap Fetches
-    const explainPlan = await this.dataSource.query(
-      `EXPLAIN (ANALYZE, BUFFERS) 
-       SELECT * FROM orders 
-       WHERE merchant_id = $1 AND status = $2 AND created_at BETWEEN $3 AND $4 
-       ORDER BY created_at DESC LIMIT $5 OFFSET $6`,
-      [merchantId, status, startDate, endDate, limit, offset],
-    );
+    // EXPLAIN the same query shape (find options can't hand back their SQL)
+    const explainQb = this.orderRepo
+      .createQueryBuilder('o')
+      .where('o.merchant_id = :merchantId', { merchantId: dto.merchantId })
+      .andWhere('o.status = :status', { status: dto.status })
+      .andWhere('o.created_at BETWEEN :startDate AND :endDate', {
+        startDate,
+        endDate,
+      })
+      .orderBy('o.created_at', 'DESC')
+      .offset(offset)
+      .limit(dto.limit);
 
     return {
       mode: 'SLOW_NAIVE_TYPEORM',
       executionTimeMs,
       totalCount,
       rowsReturned: orders.length,
-      postgresExplainPlan: explainPlan.map((r: any) => r['QUERY PLAN']),
+      postgresExplainPlan: await this.explain(explainQb),
       sampleRow: orders[0],
     };
   }
 
   /**
    * ✅ 2. THE OPTIMIZED QUERY (< 10ms via Covering Index + Cursor Pagination)
-   * Uses TypeORM QueryBuilder with:
-   * - Explicit lightweight columns (triggers Index-Only Scan, 0 Heap Fetches!)
+   * Uses the Order repository's QueryBuilder with:
+   * - Only covering-index columns (triggers Index-Only Scan, 0 Heap Fetches!)
    * - Keyset Cursor pagination ((created_at, id) < (cursorDate, cursorId))
    * - limit + 1 pattern (eliminates blocking COUNT(*) query)
-   * - getRawMany() (skips heavy TypeORM Entity hydration CPU overhead)
    */
-  async getOrdersFast(
-    merchantId: number,
-    status: string,
-    limit = 20,
-    cursorDate?: string,
-    cursorId?: number,
-  ) {
+  async getOrdersFast(dto: ListOrdersCursorQueryDto) {
     const startTime = performance.now();
-    const startDate = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
-    const endDate = new Date();
 
-    const qb = this.dataSource
-      .createQueryBuilder()
+    const qb = this.orderRepo
+      .createQueryBuilder('o')
       .select([
-        'o.id AS "id"',
-        'o.customer_id AS "customerId"',
-        'o.status AS "status"',
-        'o.total_amount AS "totalAmount"',
-        'o.created_at AS "createdAt"',
+        'o.id',
+        'o.customer_id',
+        'o.status',
+        'o.total_amount',
+        'o.created_at',
       ])
-      .from('orders', 'o')
-      .where('o.merchant_id = :merchantId', { merchantId })
-      .andWhere('o.status = :status', { status })
-      .andWhere('o.created_at >= :startDate', { startDate })
-      .andWhere('o.created_at <= :endDate', { endDate });
+      .where('o.merchant_id = :merchantId', { merchantId: dto.merchantId })
+      .andWhere('o.status = :status', { status: dto.status })
+      .andWhere('o.created_at >= :startDate', {
+        startDate: new Date(Date.now() - NINETY_DAYS_MS),
+      });
 
-    if (cursorDate && cursorId) {
+    if (dto.cursor) {
+      const { createdAt, id } = decodeOrderCursor(dto.cursor);
+      // Row-value comparison: one index range scan. TypeORM has no API for tuples,
+      // but this is still parameterised. The OR-expanded form plans worse.
       qb.andWhere('(o.created_at, o.id) < (:cursorDate, :cursorId)', {
-        cursorDate,
-        cursorId,
+        cursorDate: createdAt,
+        cursorId: id,
       });
     }
 
-    const rows = await qb
-      .orderBy('o.created_at', 'DESC')
+    qb.orderBy('o.created_at', 'DESC')
       .addOrderBy('o.id', 'DESC')
-      .limit(limit + 1)
-      .getRawMany();
+      .take(dto.limit + 1);
 
+    const rows = await qb.getMany();
     const executionTimeMs = +(performance.now() - startTime).toFixed(2);
 
-    const hasNextPage = rows.length > limit;
-    const data = hasNextPage ? rows.slice(0, limit) : rows;
-    const nextCursor = hasNextPage ? data[data.length - 1] : null;
+    const hasNextPage = rows.length > dto.limit;
+    const pageRows = hasNextPage ? rows.slice(0, dto.limit) : rows;
+    const last = pageRows.at(-1);
 
-    // Run EXPLAIN ANALYZE on the exact generated SQL from TypeORM QueryBuilder
-    const [sql, params] = qb.getQueryAndParameters();
-    const explainPlan = await this.dataSource.query(
-      `EXPLAIN (ANALYZE, BUFFERS) ${sql}`,
-      params,
-    );
+    const page: CursorPageDto<OrderListItemDto> = {
+      data: pageRows.map((order) => OrderListItemDto.fromEntity(order)),
+      hasNextPage,
+      nextCursor:
+        hasNextPage && last
+          ? encodeOrderCursor({ createdAt: last.created_at, id: last.id })
+          : null,
+    };
 
     return {
       mode: 'FAST_OPTIMIZED_TYPEORM',
       executionTimeMs,
-      rowsReturned: data.length,
-      hasNextPage,
-      nextCursor: nextCursor
-        ? { cursorDate: nextCursor.createdAt, cursorId: nextCursor.id }
-        : null,
-      postgresExplainPlan: explainPlan.map((r: any) => r['QUERY PLAN']),
-      sampleRow: data[0],
+      rowsReturned: page.data.length,
+      postgresExplainPlan: await this.explain(qb),
+      ...page,
     };
   }
 
   /**
    * 🛠️ 3. TOGGLE INDEXES ON/OFF VIA API TO WATCH LATENCY DROP IN REAL TIME
+   * Lab tooling only. The index is normally created by the AddOrdersEsrCoveringIndex
+   * migration; these endpoints let you drop it to reproduce the slow baseline.
    */
   async applyCoveringIndex() {
     const start = performance.now();
+    // No DESC needed: Postgres scans a B-tree backwards for ORDER BY created_at DESC, id DESC
     await this.dataSource.query(`
       CREATE INDEX IF NOT EXISTS idx_orders_esr_covering
-      ON orders (merchant_id, status, created_at DESC, id DESC)
+      ON orders (merchant_id, status, created_at, id)
       INCLUDE (customer_id, total_amount);
     `);
     // Run VACUUM ANALYZE so the Visibility Map is updated for Index-Only Scans!
@@ -148,7 +155,19 @@ export class OrdersService {
   }
 
   async dropIndexes() {
-    await this.dataSource.query(`DROP INDEX IF EXISTS idx_orders_esr_covering;`);
+    await this.dataSource.query(
+      `DROP INDEX IF EXISTS idx_orders_esr_covering;`,
+    );
     return { status: 'Custom Indexes Dropped (Back to Full Table Scan)' };
+  }
+
+  // EXPLAIN has no TypeORM API, so run it over the exact SQL the QueryBuilder generated
+  private async explain(qb: SelectQueryBuilder<Order>): Promise<string[]> {
+    const [sql, params] = qb.getQueryAndParameters();
+    const plan = await this.dataSource.query(
+      `EXPLAIN (ANALYZE, BUFFERS) ${sql}`,
+      params,
+    );
+    return plan.map((r: Record<string, string>) => r['QUERY PLAN']);
   }
 }

@@ -19,7 +19,11 @@
     "test:watch": "vitest",
     "test:cov": "vitest run --coverage",
     "test:debug": "vitest --inspect-brk --no-file-parallelism",
-    "test:e2e": "vitest run --config ./vitest.config.e2e.ts"
+    "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
+    "migration:generate": "nest build && node --env-file=.env node_modules/typeorm/cli.js migration:generate -d dist/database/data-source.js",
+    "migration:run": "nest build && node --env-file=.env node_modules/typeorm/cli.js migration:run -d dist/database/data-source.js",
+    "migration:revert": "nest build && node --env-file=.env node_modules/typeorm/cli.js migration:revert -d dist/database/data-source.js",
+    "db:seed": "docker exec -i indexing_lab_db psql -U labuser -d orders_lab -v ON_ERROR_STOP=1 < src/database/seed.sql"
   },
   "dependencies": {
     "@nestjs/common": "^12.2.0",
@@ -32,6 +36,8 @@
     "@opentelemetry/exporter-trace-otlp-http": "^0.300.0",
     "@opentelemetry/instrumentation-pg": "^0.77.0",
     "@opentelemetry/sdk-node": "^0.300.0",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.15.1",
     "opentelemetry-instrumentation-typeorm": "^0.41.0",
     "pg": "^8.23.1",
     "reflect-metadata": "^0.2.2",

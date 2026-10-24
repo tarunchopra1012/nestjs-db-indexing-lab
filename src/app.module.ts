@@ -21,7 +21,7 @@ import { OrdersModule } from './orders/orders.module.js';
         password: db.password,
         database: db.name,
         entities: [Customer, Product, Order, OrderItem],
-        synchronize: false, // Schema is created by seed.sql
+        synchronize: false, // Schema is managed by migrations (npm run migration:run)
         logging: db.logging,
         maxQueryExecutionTime: db.slowQueryMs, // Triggers [SLOW QUERY ALERT] if query is slower
         logger: new QueryProfilerLogger(),

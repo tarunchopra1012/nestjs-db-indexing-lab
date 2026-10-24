@@ -1,10 +1,20 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, OneToMany, JoinColumn } from 'typeorm';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  ManyToOne,
+  OneToMany,
+  JoinColumn,
+} from 'typeorm';
 import type { Relation } from 'typeorm';
 import { Order } from './order.js';
 
 @Entity('order_items')
 export class OrderItem {
-  @PrimaryGeneratedColumn('increment', { type: 'bigint' })
+  @PrimaryGeneratedColumn('identity', {
+    type: 'bigint',
+    generatedIdentity: 'ALWAYS',
+  })
   id: string;
 
   @Column({ type: 'bigint' })

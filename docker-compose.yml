@@ -3,6 +3,8 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: indexing_lab_db
+    # Docker's default 64MB /dev/shm is too small for parallel VACUUM / index builds
+    shm_size: 1gb
     environment:
       POSTGRES_USER: labuser
       POSTGRES_PASSWORD: labpassword
@@ -13,8 +15,6 @@ services:
       postgres -c shared_preload_libraries=pg_stat_statements
                -c pg_stat_statements.track=all
                -c work_mem=64MB
-    volumes:
-      - ./src/database/seed.sql:/docker-entrypoint-initdb.d/seed.sql
 
   jaeger:
     image: jaegertracing/all-in-one:latest

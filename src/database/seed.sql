@@ -1,34 +1,5 @@
-CREATE TABLE IF NOT EXISTS customers (
-    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    name VARCHAR(120) NOT NULL,
-    email VARCHAR(150) NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS products (
-    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    merchant_id BIGINT NOT NULL,
-    title VARCHAR(150) NOT NULL,
-    price NUMERIC(10, 2) NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS orders (
-    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    merchant_id BIGINT NOT NULL,
-    customer_id BIGINT NOT NULL,
-    status VARCHAR(20) NOT NULL,
-    total_amount NUMERIC(10, 2) NOT NULL,
-    shipping_address JSONB NOT NULL,
-    notes TEXT,
-    created_at TIMESTAMPTZ NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS order_items (
-    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    order_id BIGINT NOT NULL,
-    product_id BIGINT NOT NULL,
-    quantity INT NOT NULL,
-    unit_price NUMERIC(10, 2) NOT NULL
-);
+-- Data only. The schema is created by TypeORM migrations: run `npm run migration:run` first,
+-- then `npm run db:seed`.
 
 -- 1. Seed 50,000 Customers
 INSERT INTO customers (name, email)
@@ -46,7 +17,7 @@ SELECT
     -- Merchant 42 is our "Super Merchant" (gets ~20% of all orders to test data skew!)
     CASE WHEN random() < 0.20 THEN 42 ELSE (floor(random() * 500) + 1)::bigint END,
     (floor(random() * 50000) + 1)::bigint,
-    (ARRAY['PENDING', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'CANCELLED'])[floor(random() * 5) + 1],
+    (ARRAY['PENDING', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'CANCELLED'])[floor(random() * 5) + 1]::order_status,
     ROUND((random() * 1000 + 20)::numeric, 2),
     -- Realistic address, kept at roughly the same byte size as before so SELECT * stays heavy
     jsonb_build_object(
@@ -77,4 +48,5 @@ SELECT
     ROUND((random() * 250 + 10)::numeric, 2)
 FROM generate_series(1, 2000000) AS g;
 
-ANALYZE;
+-- VACUUM (not just ANALYZE) sets the visibility map, which Index-Only Scans depend on
+VACUUM ANALYZE;

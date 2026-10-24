@@ -1,5 +1,9 @@
 import { Controller, Get, Post, Delete, Query } from '@nestjs/common';
 import { OrdersService } from './orders.service.js';
+import {
+  ListOrdersCursorQueryDto,
+  ListOrdersOffsetQueryDto,
+} from './dto/list-orders.query.dto.js';
 
 @Controller('orders')
 export class OrdersController {
@@ -7,29 +11,15 @@ export class OrdersController {
 
   // 1. Trigger Slow Query: GET http://localhost:3000/orders/slow?merchantId=42&status=PENDING&page=200
   @Get('slow')
-  getSlow(
-    @Query('merchantId') merchantId = 42,
-    @Query('status') status = 'PENDING',
-    @Query('page') page = 200,
-  ) {
-    return this.ordersService.getOrdersSlow(+merchantId, status, +page);
+  getSlow(@Query() query: ListOrdersOffsetQueryDto) {
+    return this.ordersService.getOrdersSlow(query);
   }
 
   // 2. Trigger Fast Query: GET http://localhost:3000/orders/fast?merchantId=42&status=PENDING
+  //    Next page: append &cursor=<nextCursor from the previous response>
   @Get('fast')
-  getFast(
-    @Query('merchantId') merchantId = 42,
-    @Query('status') status = 'PENDING',
-    @Query('cursorDate') cursorDate?: string,
-    @Query('cursorId') cursorId?: number,
-  ) {
-    return this.ordersService.getOrdersFast(
-      +merchantId,
-      status,
-      20,
-      cursorDate,
-      cursorId ? +cursorId : undefined,
-    );
+  getFast(@Query() query: ListOrdersCursorQueryDto) {
+    return this.ordersService.getOrdersFast(query);
   }
 
   // 3. Create the ESR Covering Index: POST http://localhost:3000/orders/index
